@@ -2,7 +2,10 @@ import pandas as pd
 from shapely.geometry import Point, Polygon
 import xml.etree.ElementTree as ET
 from pyproj import Transformer
+import requests
+from io import StringIO
 
+github_kml_url = "https://raw.githubusercontent.com/akashdeepb/ward-finder-script/main/delhi_wards.kml"
 
 def parse_kml_polygons(kml_file_path):
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
@@ -37,11 +40,32 @@ def parse_kml_polygons(kml_file_path):
     return polygons_data
 
 
+def extract_coordinates(df, coord_column_name="location_coordinates"):
+    """
+    Parses the complex coordinate string and creates 'latitude' and 'longitude' columns.
+    
+    Example input string: "[{latitude: 28.679261, longitude: 77.3322629}]"
+    """
+    
+    if coord_column_name not in df.columns:
+        raise ValueError(f"Column '{coord_column_name}' not found in the DataFrame.")
+
+    lat_pattern = r'latitude:\s*([\d\.-]+)'
+    lon_pattern = r'longitude:\s*([\d\.-]+)'
+
+    df['latitude'] = df[coord_column_name].astype(str).str.extract(lat_pattern, expand=False)
+    df['longitude'] = df[coord_column_name].astype(str).str.extract(lon_pattern, expand=False)
+    
+    df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+    df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+    
+    return df
+
 def assign_wards_to_schools(schools_df, wards_data):
-    schools_df = schools_df.dropna(subset=["latitude_coordinate", "longitude_coordinate"])
-    schools_df["latitude_coordinate"] = pd.to_numeric(schools_df["latitude_coordinate"], errors='coerce')
-    schools_df["longitude_coordinate"] = pd.to_numeric(schools_df["longitude_coordinate"], errors='coerce')
-    schools_df = schools_df.dropna(subset=["latitude_coordinate", "longitude_coordinate"])
+    schools_df = schools_df.dropna(subset=["latitude", "longitude"])
+    schools_df["latitude"] = pd.to_numeric(schools_df["latitude"], errors='coerce')
+    schools_df["longitude"] = pd.to_numeric(schools_df["longitude"], errors='coerce')
+    schools_df = schools_df.dropna(subset=["latitude", "longitude"])
 
     # Initialize new columns
     schools_df["WNo_SEC"] = None
@@ -55,7 +79,7 @@ def assign_wards_to_schools(schools_df, wards_data):
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:32643", always_xy=True)
 
     for idx, school in schools_df.iterrows():
-        lon, lat = school["longitude_coordinate"], school["latitude_coordinate"]
+        lon, lat = school["longitude"], school["latitude"]
         point = Point(lon, lat)
 
         x, y = transformer.transform(lon, lat)
@@ -86,7 +110,21 @@ def assign_wards_to_schools(schools_df, wards_data):
 
 def main():
     schools_df = pd.read_csv("input.csv")
-    wards_data = parse_kml_polygons("delhi_wards.kml")
+    schools_df = extract_coordinates(schools_df, coord_column_name="location_coordinates")
+    try:
+        response = requests.get(github_kml_url)
+        response.raise_for_status()
+
+        kml_buffer = StringIO(response.text)
+        wards_data = parse_kml_polygons(kml_buffer)
+        
+        print("Data successfully loaded directly from GitHub into a memory buffer.")
+
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred while fetching the KML file: {e}")
+    except NameError:
+        print("Error: The 'parse_kml_polygons' function is not defined.")
+
     updated_schools_df = assign_wards_to_schools(schools_df, wards_data)
 
     # ✅ Select only the required columns
